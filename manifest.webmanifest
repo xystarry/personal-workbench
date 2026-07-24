@@ -1,0 +1,1 @@
+{"name":"个人工作台","short_name":"工作台","start_url":"/","display":"standalone","background_color":"#FFF8F5","lang":"en","scope":"./","description":"个人综合工作台 - 任务、知识、项目、股票复盘、习惯追踪","theme_color":"#F5A88B","orientation":"portrait","icons":[{"src":"/icon-192.svg","sizes":"192x192","type":"image/svg+xml"},{"src":"/icon-512.svg","sizes":"512x512","type":"image/svg+xml"}]}
