@@ -1,0 +1,21 @@
+{
+  "holdings": [
+    {
+      "code": "002185",
+      "market": "sz",
+      "name": "华天科技",
+      "shares": 1700,
+      "costPrice": 18.056
+    },
+    {
+      "code": "516640",
+      "market": "sh",
+      "name": "芯片ETF富国",
+      "shares": 25300,
+      "costPrice": 1.639
+    }
+  ],
+  "pushTime": "08:50",
+  "timezone": "Asia/Shanghai",
+  "outputDir": "morning-brief"
+}
