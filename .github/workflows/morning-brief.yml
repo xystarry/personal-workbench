@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   generate-brief:
@@ -25,14 +23,6 @@ jobs:
 
       - name: 生成盘前分析报告
         run: python3 scripts/morning_brief.py
-
-      - name: 提交报告到仓库
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f morning-brief/
-          git diff --quiet --cached || git commit -m "chore: 更新 $(TZ='Asia/Shanghai' date '+%Y-%m-%d') 盘前分析报告"
-          git push
 
       - name: 部署到 GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
