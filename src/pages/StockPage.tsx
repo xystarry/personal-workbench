@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { db, WatchlistItem } from '../db'
 import Header from '../components/Header'
 import Modal, { ConfirmDialog } from '../components/Modal'
-import { fetchStockData, fetchMultipleStocks, searchStock, fetchKLineData, StockData } from '../utils/stock'
+import { fetchStockData, fetchMultipleStocks, searchStock, fetchKLineData, fetchMinuteData, StockData, KLinePeriod, KLineResult } from '../utils/stock'
 import { todayStr, relativeTime } from '../utils/date'
 import ReactECharts from 'echarts-for-react'
 
@@ -259,65 +259,228 @@ function StockDetailModal({ stock, onClose }: {
   stock: { code: string; name: string }
   onClose: () => void
 }) {
-  const [kline, setKline] = useState<{
-    dates: string[]
-    closes: number[]
-    volumes: number[]
-  } | null>(null)
+  const [kline, setKline] = useState<KLineResult | null>(null)
   const [realtime, setRealtime] = useState<StockData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [period, setPeriod] = useState(30)
+  const [period, setPeriod] = useState<KLinePeriod>('day')
+
+  const PERIODS: { key: KLinePeriod; label: string }[] = [
+    { key: 'minute', label: '分时' },
+    { key: 'day',    label: '日K' },
+    { key: 'week',   label: '周K' },
+    { key: 'month',  label: '月K' },
+    { key: 'year',   label: '年K' },
+  ]
 
   useEffect(() => {
     const loadData = async () => {
       setLoading(true)
-      const [rt, kl] = await Promise.all([
-        fetchStockData(stock.code),
-        fetchKLineData(stock.code, period)
-      ])
-      setRealtime(rt)
-      setKline({
-        dates: kl.dates,
-        closes: kl.closes,
-        volumes: kl.volumes
-      })
-      setLoading(false)
+      try {
+        if (period === 'minute') {
+          const [rt, min] = await Promise.all([
+            fetchStockData(stock.code),
+            fetchMinuteData(stock.code),
+          ])
+          setRealtime(rt)
+          setKline(min)
+        } else {
+          const [rt, kl] = await Promise.all([
+            fetchStockData(stock.code),
+            fetchKLineData(stock.code, period),
+          ])
+          setRealtime(rt)
+          setKline(kl)
+        }
+      } catch (err) {
+        console.error('加载图表数据失败:', err)
+      } finally {
+        setLoading(false)
+      }
     }
     loadData()
   }, [stock.code, period])
 
-  const chartOption = kline ? {
-    grid: { left: 40, right: 10, top: 20, bottom: 60 },
-    xAxis: {
-      type: 'category',
-      data: kline.dates,
-      axisLine: { lineStyle: { color: '#E5D5C8' } },
-      axisLabel: { color: '#A09080', fontSize: 9, rotate: 45 }
-    },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#F5EDE5' } },
-      axisLabel: { color: '#A09080', fontSize: 10 }
-    },
-    series: [{
-      data: kline.closes,
-      type: 'line',
-      smooth: true,
-      symbol: 'none',
-      lineStyle: { color: '#F5A88B', width: 2 },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(245, 168, 139, 0.3)' },
-            { offset: 1, color: 'rgba(245, 168, 139, 0)' }
-          ]
-        }
+  // 构建 ECharts 配置
+  const chartOption = (() => {
+    if (!kline || kline.dates.length === 0) return {}
+
+    // ========== 分时线配置 ==========
+    if (period === 'minute') {
+      return {
+        grid: { left: 50, right: 15, top: 20, bottom: 30 },
+        xAxis: {
+          type: 'category',
+          data: kline.dates,
+          axisLine: { lineStyle: { color: '#E5D5C8' } },
+          axisLabel: {
+            color: '#A09080', fontSize: 9,
+            interval: 29, // 每30分钟显示一个标签
+          },
+        },
+        yAxis: {
+          type: 'value',
+          scale: true,
+          axisLine: { show: false },
+          splitLine: { lineStyle: { color: '#F5EDE5' } },
+          axisLabel: { color: '#A09080', fontSize: 10 },
+        },
+        series: [
+          {
+            name: '价格',
+            type: 'line',
+            data: kline.closes,
+            smooth: false,
+            symbol: 'none',
+            lineStyle: { color: '#F5A88B', width: 1.5 },
+            areaStyle: {
+              color: {
+                type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+                colorStops: [
+                  { offset: 0, color: 'rgba(245, 168, 139, 0.25)' },
+                  { offset: 1, color: 'rgba(245, 168, 139, 0)' },
+                ],
+              },
+            },
+            markLine: kline.yesterdayClose ? {
+              silent: true,
+              symbol: 'none',
+              lineStyle: { color: '#A09080', type: 'dashed', width: 1 },
+              data: [{ yAxis: kline.yesterdayClose }],
+              label: {
+                show: true,
+                position: 'end',
+                formatter: `昨收 ${kline.yesterdayClose.toFixed(2)}`,
+                color: '#A09080',
+                fontSize: 10,
+              },
+            } : undefined,
+          },
+        ],
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            const p = params[0]
+            return `${p.axisValue}<br/>价格: ${Number(p.value).toFixed(2)}`
+          },
+        },
       }
-    }]
-  } : {}
+    }
+
+    // ========== K 线蜡烛图配置（日K/周K/月K/年K） ==========
+    // ECharts candlestick data: [open, close, low, high]
+    const candleData = kline.opens.map((o, i) => [o, kline.closes[i], kline.lows[i], kline.highs[i]])
+
+    return {
+      grid: [
+        { left: 50, right: 15, top: 15, height: '52%' },        // 蜡烛图区域
+        { left: 50, right: 15, top: '70%', height: '20%' },      // 成交量区域
+      ],
+      xAxis: [
+        {
+          type: 'category',
+          data: kline.dates,
+          gridIndex: 0,
+          axisLine: { lineStyle: { color: '#E5D5C8' } },
+          axisLabel: {
+            color: '#A09080', fontSize: 9,
+            rotate: period === 'year' ? 0 : 30,
+          },
+          axisTick: { alignWithLabel: true },
+        },
+        {
+          type: 'category',
+          data: kline.dates,
+          gridIndex: 1,
+          axisLine: { show: false },
+          axisTick: { show: false },
+          axisLabel: { show: false },
+        },
+      ],
+      yAxis: [
+        {
+          type: 'value',
+          scale: true,
+          gridIndex: 0,
+          axisLine: { show: false },
+          splitLine: { lineStyle: { color: '#F5EDE5' } },
+          axisLabel: { color: '#A09080', fontSize: 10 },
+        },
+        {
+          type: 'value',
+          gridIndex: 1,
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { show: false },
+          axisLabel: { show: false },
+        },
+      ],
+      series: [
+        {
+          name: 'K线',
+          type: 'candlestick',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: candleData,
+          itemStyle: {
+            color: '#ef5350',            // 阳线（涨）红色
+            color0: '#26a69a',           // 阴线（跌）绿色
+            borderColor: '#ef5350',
+            borderColor0: '#26a69a',
+          },
+        },
+        {
+          name: '成交量',
+          type: 'bar',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: kline.volumes.map((v, i) => ({
+            value: v,
+            itemStyle: {
+              color: kline.closes[i] >= kline.opens[i]
+                ? 'rgba(239, 83, 80, 0.5)'
+                : 'rgba(38, 166, 154, 0.5)',
+            },
+          })),
+        },
+      ],
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        formatter: (params: any) => {
+          const k = params.find((p: any) => p.seriesName === 'K线')
+          const v = params.find((p: any) => p.seriesName === '成交量')
+          if (!k) return ''
+          const d = k.data // [open, close, low, high]
+          const change = d[1] - d[0]
+          const changePct = d[0] !== 0 ? (change / d[0] * 100) : 0
+          const volStr = v ? `<br/>量: ${(v.value / 10000).toFixed(0)}万手` : ''
+          return `${k.axisValue}<br/>开: ${d[0]}<br/>收: ${d[1]}<br/>低: ${d[2]}<br/>高: ${d[3]}<br/>涨跌: ${change >= 0 ? '+' : ''}${change.toFixed(2)} (${changePct.toFixed(2)}%)${volStr}`
+        },
+      },
+      dataZoom: [
+        {
+          type: 'inside',
+          xAxisIndex: [0, 1],
+          start: 50,
+          end: 100,
+        },
+        {
+          type: 'slider',
+          xAxisIndex: [0, 1],
+          start: 50,
+          end: 100,
+          bottom: 5,
+          height: 18,
+          borderColor: '#E5D5C8',
+          fillerColor: 'rgba(245, 168, 139, 0.15)',
+          handleStyle: { color: '#F5A88B' },
+          textStyle: { color: '#A09080', fontSize: 9 },
+        },
+      ],
+    }
+  })()
+
+  const chartHeight = period === 'minute' ? 260 : 360
 
   return (
     <Modal open onClose={onClose} title={`${stock.name} (${stock.code})`}>
@@ -346,24 +509,30 @@ function StockDetailModal({ stock, onClose }: {
             </div>
           )}
 
-          {/* 周期切换 */}
-          <div className="flex gap-2">
-            {[7, 30, 90, 180].map(d => (
+          {/* 周期切换 Tab */}
+          <div className="flex bg-warm-50 rounded-xl p-1 gap-0.5">
+            {PERIODS.map(p => (
               <button
-                key={d}
-                onClick={() => setPeriod(d)}
-                className={`flex-1 py-1.5 rounded-lg text-xs ${period === d ? 'bg-warm-500 text-white' : 'bg-warm-50 text-warm-400'}`}
+                key={p.key}
+                onClick={() => setPeriod(p.key)}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  period === p.key
+                    ? 'bg-white text-warm-600 shadow-sm'
+                    : 'text-warm-400'
+                }`}
               >
-                {d === 7 ? '周' : d === 30 ? '月' : d === 90 ? '季' : '半年'}
+                {p.label}
               </button>
             ))}
           </div>
 
-          {/* K 线图 */}
+          {/* 图表 */}
           {kline && kline.dates.length > 0 ? (
-            <ReactECharts option={chartOption} style={{ height: 220 }} />
+            <ReactECharts option={chartOption} style={{ height: chartHeight }} />
           ) : (
-            <p className="text-center text-sm text-gray-400 py-4">暂无K线数据</p>
+            <p className="text-center text-sm text-gray-400 py-4">
+              {period === 'minute' ? '非交易时段，暂无分时数据' : '暂无K线数据'}
+            </p>
           )}
 
           {/* 写复盘按钮 */}

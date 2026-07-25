@@ -190,24 +190,93 @@ export async function searchStock(keyword: string): Promise<{ code: string; name
   return local.length > 0 ? local : ( /^\d{6}$/.test(kw) ? [{ code: kw, name: kw }] : [] )
 }
 
-// 获取 K 线数据（腾讯接口，支持 CORS）
-export async function fetchKLineData(code: string, days: number = 30): Promise<{
-  dates: string[]
+// K 线周期类型
+type KLinePeriod = 'minute' | 'day' | 'week' | 'month' | 'year'
+
+// K 线数据统一返回类型
+interface KLineResult {
+  dates: string[]       // 分时: ["09:30", ...]; K线: ["2026-07-24", ...]
   opens: number[]
   closes: number[]
   highs: number[]
   lows: number[]
   volumes: number[]
-}> {
+  yesterdayClose?: number  // 仅分时线使用，画昨收参考线
+}
+
+// 获取分时线数据（当日分钟走势）
+export async function fetchMinuteData(code: string): Promise<KLineResult> {
   try {
     const tcCode = toTencentCode(code)
-    // 腾讯日K接口
-    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcCode},day,,,${days},qfq`
+    const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tcCode}`
+    const response = await fetch(url)
+    if (!response.ok) throw new Error('获取分时线失败')
+
+    const data = await response.json()
+    const stockEntry = data.data?.[tcCode] || {}
+
+    // 解析昨收价（qt 中 tcCode 数组的第 4 项）
+    const qtData = stockEntry.qt?.[tcCode] || stockEntry.qt?.[`v_${tcCode}`] || []
+    const yesterdayClose = qtData[4] ? parseFloat(qtData[4]) : 0
+
+    // 分时数据格式: ["0930 17.22 37786 65067492.00", ...]
+    const rawLines: string[] = stockEntry.data?.data || []
+
+    const dates: string[] = []
+    const opens: number[] = []
+    const closes: number[] = []
+    const highs: number[] = []
+    const lows: number[] = []
+    const volumes: number[] = []
+
+    rawLines.forEach((line: string) => {
+      const parts = line.split(' ')
+      const timeRaw = parts[0]  // "0930"
+      const price = parseFloat(parts[1])
+      const vol = parseFloat(parts[2])
+
+      // 格式化时间为 "09:30"
+      const formattedTime = timeRaw.length === 4
+        ? `${timeRaw.substring(0, 2)}:${timeRaw.substring(2)}`
+        : timeRaw
+
+      dates.push(formattedTime)
+      closes.push(price)
+      opens.push(price)
+      highs.push(price)
+      lows.push(price)
+      volumes.push(vol)
+    })
+
+    return { dates, opens, closes, highs, lows, volumes, yesterdayClose }
+  } catch (error) {
+    console.error('获取分时线数据失败:', error)
+    return { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [] }
+  }
+}
+
+// 获取 K 线数据（支持日K/周K/月K，腾讯接口）
+export async function fetchKLineData(
+  code: string,
+  period: KLinePeriod = 'day',
+  count: number = 120
+): Promise<KLineResult> {
+  // 年K通过月K聚合实现
+  if (period === 'year') {
+    return fetchYearlyKLine(code)
+  }
+
+  try {
+    const tcCode = toTencentCode(code)
+    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcCode},${period},,,${count},qfq`
     const response = await fetch(url)
     if (!response.ok) throw new Error('获取K线失败')
 
     const data = await response.json()
-    const klines = data.data?.[tcCode]?.day || data.data?.[tcCode]?.qfqday || []
+    const stockData = data.data?.[tcCode] || {}
+
+    // 数据可能存在 day/qfqday, week/qfqweek, month/qfqmonth
+    const klines = stockData[period] || stockData[`qfq${period}`] || []
 
     const dates: string[] = []
     const opens: number[] = []
@@ -232,4 +301,56 @@ export async function fetchKLineData(code: string, days: number = 30): Promise<{
   }
 }
 
-export type { StockData }
+// 获取年K线数据（通过月K聚合）
+async function fetchYearlyKLine(code: string): Promise<KLineResult> {
+  try {
+    // 取 240 条月K（约 20 年）
+    const monthly = await fetchKLineData(code, 'month', 240)
+
+    if (monthly.dates.length === 0) {
+      return { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [] }
+    }
+
+    // 按年份分组聚合
+    const yearMap: Record<string, {
+      opens: number[]; closes: number[]; highs: number[]; lows: number[]; volumes: number[]
+    }> = {}
+
+    for (let i = 0; i < monthly.dates.length; i++) {
+      const year = monthly.dates[i].substring(0, 4) // "2026-07-24" -> "2026"
+      if (!yearMap[year]) {
+        yearMap[year] = { opens: [], closes: [], highs: [], lows: [], volumes: [] }
+      }
+      yearMap[year].opens.push(monthly.opens[i])
+      yearMap[year].closes.push(monthly.closes[i])
+      yearMap[year].highs.push(monthly.highs[i])
+      yearMap[year].lows.push(monthly.lows[i])
+      yearMap[year].volumes.push(monthly.volumes[i])
+    }
+
+    const years = Object.keys(yearMap).sort()
+    const dates: string[] = []
+    const opens: number[] = []
+    const closes: number[] = []
+    const highs: number[] = []
+    const lows: number[] = []
+    const volumes: number[] = []
+
+    for (const year of years) {
+      const m = yearMap[year]
+      dates.push(year)
+      opens.push(m.opens[0])                         // 年初第一个月的开盘价
+      closes.push(m.closes[m.closes.length - 1])     // 年末最后一个月的收盘价
+      highs.push(Math.max(...m.highs))               // 全年最高
+      lows.push(Math.min(...m.lows))                 // 全年最低
+      volumes.push(m.volumes.reduce((a, b) => a + b, 0)) // 全年成交量之和
+    }
+
+    return { dates, opens, closes, highs, lows, volumes }
+  } catch (error) {
+    console.error('获取年K线数据失败:', error)
+    return { dates: [], opens: [], closes: [], highs: [], lows: [], volumes: [] }
+  }
+}
+
+export type { StockData, KLinePeriod, KLineResult }
