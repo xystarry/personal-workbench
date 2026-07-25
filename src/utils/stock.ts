@@ -65,47 +65,71 @@ export function toSinaCode(code: string): string {
   }
 }
 
-// 获取单只股票实时行情
+// 获取单只股票实时行情（东方财富 push2 接口，支持 CORS）
 export async function fetchStockData(code: string): Promise<StockData | null> {
   try {
-    const sinaCode = toSinaCode(code)
-    const url = `https://hq.sinajs.cn/list=${sinaCode}`
+    const market = code.startsWith('6') || code.startsWith('5') ? 1 : 0
+    const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${market}.${code}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170`
     const response = await fetch(url, {
-      headers: {
-        'Referer': 'https://finance.sina.com.cn'
-      }
+      headers: { 'Referer': 'https://quote.eastmoney.com/' }
     })
-
     if (!response.ok) return null
-    const text = await response.text()
-    return parseSinaData(text, code)
+    const data = await response.json()
+    const d = data.data
+    if (!d) return null
+
+    const price = (d.f43 / 100).toFixed(3)
+    const prevClose = (d.f60 / 100).toFixed(3)
+    const change = (d.f169 / 100).toFixed(3)
+    const changePercent = (d.f170 / 100).toFixed(2)
+    return {
+      code,
+      name: d.f58,
+      open: d.f46 / 100,
+      yesterdayClose: parseFloat(prevClose),
+      current: parseFloat(price),
+      high: d.f44 / 100,
+      low: d.f45 / 100,
+      volume: d.f47,
+      amount: d.f48,
+      change: parseFloat(change),
+      changePercent: parseFloat(changePercent),
+      timestamp: new Date().toISOString()
+    }
   } catch (error) {
     console.error('获取股票数据失败:', error)
     return null
   }
 }
 
-// 批量获取多只股票行情
+// 批量获取多只股票行情（东方财富 push2 接口）
 export async function fetchMultipleStocks(codes: string[]): Promise<StockData[]> {
   try {
-    const sinaCodes = codes.map(toSinaCode)
-    const url = `https://hq.sinajs.cn/list=${sinaCodes.join(',')}`
+    const secids = codes.map(c => {
+      const market = c.startsWith('6') || c.startsWith('5') ? 1 : 0
+      return `${market}.${c}`
+    }).join(',')
+    const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fields=f1,f2,f3,f12,f14&secids=${secids}`
     const response = await fetch(url, {
-      headers: {
-        'Referer': 'https://finance.sina.com.cn'
-      }
+      headers: { 'Referer': 'https://quote.eastmoney.com/' }
     })
-
     if (!response.ok) return []
-    const text = await response.text()
-    const lines = text.split('\n').filter(l => l.trim())
-
-    const results: StockData[] = []
-    for (let i = 0; i < lines.length; i++) {
-      const data = parseSinaData(lines[i], codes[i])
-      if (data) results.push(data)
-    }
-    return results
+    const data = await response.json()
+    const list = data.data?.diff || []
+    return list.map((d: any) => ({
+      code: d.f12,
+      name: d.f14,
+      open: 0,
+      yesterdayClose: 0,
+      current: d.f2 / 100,
+      high: 0,
+      low: 0,
+      volume: 0,
+      amount: 0,
+      change: 0,
+      changePercent: d.f3 / 100,
+      timestamp: new Date().toISOString()
+    }))
   } catch (error) {
     console.error('批量获取股票数据失败:', error)
     return []
@@ -119,10 +143,13 @@ export async function searchStock(keyword: string): Promise<{ code: string; name
     const response = await fetch(url)
     if (!response.ok) return []
     const data = await response.json()
-    if (!data.QuotationCodeTable) return []
+    const table = data.QuotationCodeTable
+    if (!table) return []
+    const items = table.Data || table
+    if (!Array.isArray(items)) return []
 
-    return data.QuotationCodeTable
-      .filter((item: any) => item.MktNum === '0' || item.MktNum === '1') // 只取沪深
+    return items
+      .filter((item: any) => item.MktNum === '0' || item.MktNum === '1' || item.Classify === 'AStock')
       .map((item: any) => ({
         code: item.Code,
         name: item.Name
