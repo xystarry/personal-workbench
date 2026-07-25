@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import BottomNav from './components/BottomNav'
+import InstallPrompt from './components/InstallPrompt'
 import HomePage from './pages/HomePage'
 import TasksPage from './pages/TasksPage'
 import KnowledgePage from './pages/KnowledgePage'
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <BottomNav />
+      <InstallPrompt />
     </div>
   )
 }
