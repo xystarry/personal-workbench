@@ -65,14 +65,21 @@ function parseTencentData(text: string, code: string): StockData | null {
   }
 }
 
+// 腾讯接口返回 GBK 编码，浏览器默认 UTF-8 解码会乱码
+// 需要用 arrayBuffer + TextDecoder('gbk') 正确解码
+async function fetchGBK(url: string): Promise<string> {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const buffer = await response.arrayBuffer()
+  return new TextDecoder('gbk').decode(buffer)
+}
+
 // 获取单只股票实时行情（腾讯接口，支持 CORS）
 export async function fetchStockData(code: string): Promise<StockData | null> {
   try {
     const tcCode = toTencentCode(code)
     const url = `https://qt.gtimg.cn/q=${tcCode}`
-    const response = await fetch(url)
-    if (!response.ok) return null
-    const text = await response.text()
+    const text = await fetchGBK(url)
     return parseTencentData(text, code)
   } catch (error) {
     console.error('获取股票数据失败:', error)
@@ -85,9 +92,7 @@ export async function fetchMultipleStocks(codes: string[]): Promise<StockData[]>
   try {
     const tcCodes = codes.map(toTencentCode)
     const url = `https://qt.gtimg.cn/q=${tcCodes.join(',')}`
-    const response = await fetch(url)
-    if (!response.ok) return []
-    const text = await response.text()
+    const text = await fetchGBK(url)
     const lines = text.split(';').filter(l => l.trim())
 
     const results: StockData[] = []
